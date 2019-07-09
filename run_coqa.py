@@ -326,12 +326,27 @@ def main():
             list(filter(None, args.bert_model.split('/'))).pop(),
             str(args.max_seq_length), str(args.doc_stride),
             str(args.max_query_length))
+        cached_train_examples_file = args.train_file + '_examples.pk'
+
+        # try train_examples
+        try:
+            with open(cached_train_examples_file, "rb") as reader:
+                train_examples = pickle.load(reader)
+        except:
+            logger.info("  No cached file %s", cached_train_examples_file)
+            train_examples = read_coqa_examples(input_file=args.train_file)
+            if args.local_rank == -1 or torch.distributed.get_rank() == 0:
+                logger.info("  Saving train examples into cached file %s",
+                            cached_train_examples_file)
+                with open(cached_train_examples_file, "wb") as writer:
+                    pickle.dump(train_examples, writer)
+
+        # try train_features
         try:
             with open(cached_train_features_file, "rb") as reader:
                 train_features = pickle.load(reader)
         except:
             logger.info("  No cached file %s", cached_train_features_file)
-            train_examples = read_coqa_examples(input_file=args.train_file)
             train_features = convert_examples_to_features(
                 examples=train_examples,
                 tokenizer=tokenizer,
@@ -514,13 +529,25 @@ def main():
             str(args.max_seq_length), str(args.doc_stride),
             str(args.max_query_length))
         cached_eval_examples_file = args.predict_file + '_examples.pk'
+
+        # try eval_examples
         try:
             with open(cached_eval_examples_file, 'rb') as reader:
                 eval_examples = pickle.load(reader)
+        except:
+            logger.info("No cached file: %s", cached_eval_examples_file)
+            eval_examples = read_coqa_examples(input_file=args.predict_file)
+            logger.info("  Saving eval examples into cached file %s",
+                        cached_eval_examples_file)
+            with open(cached_eval_examples_file, 'wb') as writer:
+                pickle.dump(eval_examples, writer)
+
+        # try eval_features
+        try:
             with open(cached_eval_features_file, "rb") as reader:
                 eval_features = pickle.load(reader)
         except:
-            eval_examples = read_coqa_examples(input_file=args.predict_file)
+            logger.info("No cached file: %s", cached_eval_features_file)
             eval_features = convert_examples_to_features(
                 examples=eval_examples,
                 tokenizer=tokenizer,
@@ -530,8 +557,6 @@ def main():
             )
             logger.info("  Saving eval features into cached file %s",
                         cached_eval_features_file)
-            with open(cached_eval_examples_file, 'wb') as writer:
-                pickle.dump(eval_examples, writer)
             with open(cached_eval_features_file, "wb") as writer:
                 pickle.dump(eval_features, writer)
 

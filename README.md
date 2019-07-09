@@ -7,6 +7,8 @@ Code is basically combined from [run_squad.py](https://github.com/huggingface/py
 
 On default setting, I train model base on bert_base_uncased on **2x RTX2080Ti** for 3 epochs , batch_size=32, with fp16, and achieve **72.3 F1-score**. that can definitely be improved. I forgot the time-using but it's take no much time :)
 
+**Not tested on multi-machine training**
+
 ## Requirement
 - pytorch (tested on *1.1.0*)
 - spacy (tested on *2.0.16*)
