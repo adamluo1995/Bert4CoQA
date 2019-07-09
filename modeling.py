@@ -1,5 +1,6 @@
 from pytorch_pretrained_bert.modeling import BertModel, BertPreTrainedModel
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
 
 
@@ -13,7 +14,10 @@ class BertForCoQA(BertPreTrainedModel):
         self.bert = BertModel(config,
                               output_attentions=output_attentions,
                               keep_multihead_output=keep_multihead_output)
+        self.qa_outputs_mid = nn.Linear(config.hidden_size, config.hidden_size)
         self.qa_outputs = nn.Linear(config.hidden_size, 2)
+        self.cls_outputs_mid = nn.Linear(config.hidden_size,
+                                         config.hidden_size)
         self.cls_outputs = nn.Linear(config.hidden_size, 4)
         self.apply(self.init_bert_weights)
 
@@ -35,8 +39,10 @@ class BertForCoQA(BertPreTrainedModel):
             all_attentions, sequence_output, cls_outputs = outputs
         else:
             sequence_output, cls_outputs = outputs
-        span_logits = self.qa_outputs(sequence_output)
-        cls_logits = self.cls_outputs(cls_outputs)
+        span_logits = self.qa_outputs(
+            F.relu(self.qa_outputs_mid(sequence_output)))
+        cls_logits = self.cls_outputs(F.relu(
+            self.cls_outputs_mid(cls_outputs)))
 
         start_logits, end_logits = span_logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
