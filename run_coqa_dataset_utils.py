@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-""" Load SQuAD dataset. """
+""" Load CoQA dataset. """
 
 from __future__ import absolute_import, division, print_function
 
@@ -34,9 +34,9 @@ from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_toke
 logger = logging.getLogger(__name__)
 
 
-class SquadExample(object):
+class CoqaExample(object):
     """
-    A single training/test example for the Squad dataset.
+    A single training/test example for the CoQA dataset.
     For examples without an answer, the start and end position are -1.
     """
 
@@ -48,6 +48,7 @@ class SquadExample(object):
             orig_answer_text=None,
             start_position=None,
             end_position=None,
+            additional_answers=None,
     ):
         self.qas_id = qas_id
         self.question_text = question_text
@@ -55,6 +56,7 @@ class SquadExample(object):
         self.orig_answer_text = orig_answer_text
         self.start_position = start_position
         self.end_position = end_position
+        self.additional_answers = additional_answers
 
     def __str__(self):
         return self.__repr__()
@@ -101,8 +103,8 @@ class InputFeatures(object):
         self.cls_idx = cls_idx
 
 
-def read_squad_examples(input_file, history_len=2, add_QA_tag=False):
-    """Read a SQuAD json file into a list of SquadExample."""
+def read_coqa_examples(input_file, history_len=2, add_QA_tag=False):
+    """Read a CoQA json file into a list of CoqaExample."""
     """Useful Function"""
 
     def is_whitespace(c):
@@ -248,7 +250,7 @@ def read_squad_examples(input_file, history_len=2, add_QA_tag=False):
         input_data = json.load(reader)["data"]
     examples = []
     input_data = input_data  # careful
-    for data_idx in tqdm(range(len(input_data))):
+    for data_idx in tqdm(range(len(input_data)), desc='Generating examples'):
         datum = input_data[data_idx]
         context_str = datum['story']
         _datum = {
@@ -334,13 +336,15 @@ def read_squad_examples(input_file, history_len=2, add_QA_tag=False):
             _qas['annotated_long_question'] = process(
                 nlp(pre_proc(long_question)))
             # _datum['qas'].append(_qas)
-            example = SquadExample(
+            example = CoqaExample(
                 qas_id=_datum['id'] + ' ' + str(_qas['turn_id']),
                 question_text=_qas['raw_long_question'],
                 doc_tokens=_datum['annotated_context']['word'],
                 orig_answer_text=_qas['raw_answer'],
                 start_position=_qas['answer_span'][0],
-                end_position=_qas['answer_span'][1])
+                end_position=_qas['answer_span'][1],
+                additional_answers=_qas['additional_answers'] if 'additional_answers' in _qas else None,
+                )
             examples.append(example)
 
     return examples
@@ -353,8 +357,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
     unique_id = 1000000000
 
     features = []
-    cls_se_map = [(-1, 0), (0, -1), (-1, -1)]
-    for (example_index, example) in enumerate(examples):
+    for (example_index, example) in enumerate(tqdm(examples, desc="Generating features")):
         query_tokens = tokenizer.tokenize(example.question_text)
 
         cls_idx = 3
@@ -381,7 +384,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
         tok_start_position = None
         tok_end_position = None
         if cls_idx < 3:
-            tok_start_position, tok_end_position = cls_se_map[cls_idx]
+            tok_start_position, tok_end_position = 0,0
         else:
             tok_start_position = orig_to_tok_index[example.start_position]
             if example.end_position < len(example.doc_tokens) - 1:
@@ -389,7 +392,9 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                                                      1] - 1
             else:
                 tok_end_position = len(all_doc_tokens) - 1
-
+            (tok_start_position, tok_end_position) = _improve_answer_span(
+                all_doc_tokens, tok_start_position, tok_end_position, tokenizer,
+                example.orig_answer_text)
         # The -3 accounts for [CLS], [SEP] and [SEP]
         max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
 
@@ -475,7 +480,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             else:
                 start_position = 0
                 end_position = 0
-            if example_index < 20:
+            if example_index < 5:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
                 logger.info("example_index: %s" % (example_index))
@@ -631,7 +636,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     all_nbest_json = collections.OrderedDict()
     scores_diff_json = collections.OrderedDict()
 
-    for (example_index, example) in enumerate(all_examples):
+    for (example_index, example) in enumerate(tqdm(all_examples, desc="Writing preditions")):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
@@ -873,7 +878,9 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         assert len(nbest_json) >= 1
 
-        all_predictions[example.qas_id] = nbest_json[0]["text"]
+        
+
+        all_predictions[example.qas_id] = confirm_preds(nbest_json)
         # if not version_2_with_negative:
         #     all_predictions[example.qas_id] = nbest_json[0]["text"]
         # else:
@@ -897,6 +904,16 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     #     with open(output_null_log_odds_file, "w") as writer:
     #         writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
 
+def confirm_preds(nbest_json):
+    # Do something for some obvious wrong-predictions
+    subs = ['one', 'two', 'three','four','five','six','seven','eight','nine','ten','eleven','twelve','true','false'] # very hard-coding, can be extended.
+    ori = nbest_json[0]['text']
+    if len(ori) < 2: # mean span like '.', '!'
+        for e in nbest_json[1:]:
+            if _normalize_answer(e['text']) in subs:
+                return e['text']
+        return 'unknown'
+    return ori
 
 def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     """Project the tokenized prediction back to the original text."""
@@ -1030,3 +1047,103 @@ def _compute_softmax(scores):
     for score in exp_scores:
         probs.append(score / total_sum)
     return probs
+
+def _normalize_answer(s):
+    def remove_articles(text):
+        return re.sub(r'\b(a|an|the)\b', ' ', text)
+
+    def white_space_fix(text):
+        return ' '.join(text.split())
+
+    def remove_punc(text):
+        exclude = set(string.punctuation)
+        return ''.join(ch for ch in text if ch not in exclude)
+
+    def lower(text):
+        return text.lower()
+
+    return white_space_fix(remove_articles(remove_punc(lower(s))))
+
+def score(pred, truth):
+    def _f1_score(pred, answers):
+        def _score(g_tokens, a_tokens):
+            common = Counter(g_tokens) & Counter(a_tokens)
+            num_same = sum(common.values())
+            if num_same == 0:
+                return 0
+            precision = 1. * num_same / len(g_tokens)
+            recall = 1. * num_same / len(a_tokens)
+            f1 = (2 * precision * recall) / (precision + recall)
+            return f1
+
+        if pred is None or answers is None:
+            return 0
+
+        if len(answers) == 0:
+            return 1. if len(pred) == 0 else 0.
+
+        g_tokens = _normalize_answer(pred).split()
+        ans_tokens = [_normalize_answer(answer).split() for answer in answers]
+        scores = [_score(g_tokens, a) for a in ans_tokens]
+        if len(ans_tokens) == 1:
+            score = scores[0]
+        else:
+            score = 0
+            for i in range(len(ans_tokens)):
+                scores_one_out = scores[:i] + scores[(i + 1):]
+                score += max(scores_one_out)
+            score /= len(ans_tokens)
+        return score
+    
+    #Main Stream
+    assert len(pred) == len(truth)
+    pred, truth = pred.items(), truth.items()
+    no_ans_total = no_total = yes_total = normal_total = total = 0
+    no_ans_f1 = no_f1 = yes_f1 = normal_f1 = f1 = 0
+    all_f1s = []
+    for (p_id,p), (t_id,t),in zip(pred, truth):
+        assert p_id==t_id
+        total += 1
+        this_f1 = _f1_score(p, t)
+        f1 += this_f1
+        all_f1s.append(this_f1)
+        if t[0].lower() == 'no':
+            no_total += 1
+            no_f1 += this_f1
+        elif t[0].lower() == 'yes':
+            yes_total += 1
+            yes_f1 += this_f1
+        elif t[0].lower() == 'unknown':
+            no_ans_total += 1
+            no_ans_f1 += this_f1
+        else:
+            normal_total += 1
+            normal_f1 += this_f1
+
+    f1 = 100. * f1 / total
+    if no_total == 0:
+        no_f1 = 0.
+    else:
+        no_f1 = 100. * no_f1 / no_total
+    if yes_total == 0:
+        yes_f1 = 0
+    else:
+        yes_f1 = 100. * yes_f1 / yes_total
+    if no_ans_total == 0:
+        no_ans_f1 = 0.
+    else:
+        no_ans_f1 = 100. * no_ans_f1 / no_ans_total
+    normal_f1 = 100. * normal_f1 / normal_total
+    result = {
+        'total': total,
+        'f1': f1,
+        'no_total': no_total,
+        'no_f1': no_f1,
+        'yes_total': yes_total,
+        'yes_f1': yes_f1,
+        'no_ans_total': no_ans_total,
+        'no_ans_f1': no_ans_f1,
+        'normal_total': normal_total,
+        'normal_f1': normal_f1,
+    }
+    return result, all_f1s

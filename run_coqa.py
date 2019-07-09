@@ -13,7 +13,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-"""Run BERT on SQuAD."""
+"""Run BERT on CoQA."""
 
 from __future__ import absolute_import, division, print_function
 
@@ -23,6 +23,7 @@ import os
 import random
 import sys
 from io import open
+import json
 
 import numpy as np
 import torch
@@ -40,8 +41,8 @@ from pytorch_pretrained_bert.modeling import BertModel, BertPreTrainedModel
 from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
 from pytorch_pretrained_bert.tokenization import BertTokenizer
 
-from run_coqa_dataset_utils import read_squad_examples, convert_examples_to_features, RawResult, write_predictions
-from parallel import DataParallelCriterion, DataParallelModel, gather
+from run_coqa_dataset_utils import read_coqa_examples, convert_examples_to_features, RawResult, write_predictions, score
+# from parallel import DataParallelCriterion, DataParallelModel, gather
 
 if sys.version_info[0] == 2:
     import cPickle as pickle
@@ -135,16 +136,16 @@ def main():
     )
 
     ## Other parameters
-    parser.add_argument("--train_file",
-                        default=None,
-                        type=str,
-                        help="CoQA json for training. E.g., train-v1.1.json")
+    parser.add_argument(
+        "--train_file",
+        default=None,
+        type=str,
+        help="CoQA json for training. E.g., coqa-train-v1.0.json")
     parser.add_argument(
         "--predict_file",
         default=None,
         type=str,
-        help="SQuAD json for predictions. E.g., dev-v1.1.json or test-v1.1.json"
-    )
+        help="CoQA json for predictions. E.g., coqa-dev-v1.1.json")
     parser.add_argument(
         "--max_seq_length",
         default=384,
@@ -173,12 +174,15 @@ def main():
     parser.add_argument("--do_predict",
                         action='store_true',
                         help="Whether to run eval on the dev set.")
+    parser.add_argument("--do_F1",
+                        action='store_true',
+                        help="Whether to calculating F1 score")
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--predict_batch_size",
-                        default=8,
+                        default=128,
                         type=int,
                         help="Total batch size for predictions.")
     parser.add_argument("--learning_rate",
@@ -215,7 +219,7 @@ def main():
         action='store_true',
         help=
         "If true, all of the warnings related to data processing will be printed. "
-        "A number of warnings are expected for a normal SQuAD evaluation.")
+        "A number of warnings are expected for a normal CoQA evaluation.")
     parser.add_argument("--no_cuda",
                         action='store_true',
                         help="Whether not to use CUDA when available")
@@ -274,6 +278,14 @@ def main():
                         type=str,
                         default='',
                         help="Can be used for distant debugging.")
+    parser.add_argument('--logfile',
+                        type=str,
+                        default=None,
+                        help='Which file to keep log.')
+    parser.add_argument('--logmode',
+                        type=str,
+                        default=None,
+                        help='logging mode, `w` or `a`')
     args = parser.parse_args()
     print(args)
 
@@ -300,7 +312,9 @@ def main():
     logging.basicConfig(
         format='%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
         datefmt='%m/%d/%Y %H:%M:%S',
-        level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN)
+        level=logging.INFO if args.local_rank in [-1, 0] else logging.WARN,
+        filename=args.logfile,
+        filemode=args.logmode)
 
     logger.info(
         "device: {} n_gpu: {}, distributed training: {}, 16-bits training: {}".
@@ -319,9 +333,10 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_predict:
+    if not args.do_train and not args.do_predict and not args.do_F1:
         raise ValueError(
-            "At least one of `do_train` or `do_predict` must be True.")
+            "At least one of `do_train` or `do_predict` or `do_F1` must be True."
+        )
 
     if args.do_train:
         if not args.train_file:
@@ -344,30 +359,31 @@ def main():
     if args.local_rank not in [-1, 0]:
         torch.distributed.barrier(
         )  # Make sure only the first process in distributed training will download model & vocab
-    tokenizer = BertTokenizer.from_pretrained(args.bert_model,
-                                              do_lower_case=args.do_lower_case)
-    model = BertForCoQA.from_pretrained(args.bert_model)
-    if args.local_rank == 0:
-        torch.distributed.barrier()
 
-    if args.fp16:
-        model.half()
-    model.to(device)
-    if args.local_rank != -1:
-        model = torch.nn.parallel.DistributedDataParallel(
-            model,
-            device_ids=[args.local_rank],
-            output_device=args.local_rank,
-            find_unused_parameters=True)
-    elif n_gpu > 1:
-        model = torch.nn.DataParallel(model)
-        # model = DataParallelModel(model)
+    if args.do_train or args.do_predict:
+        tokenizer = BertTokenizer.from_pretrained(
+            args.bert_model, do_lower_case=args.do_lower_case)
+        model = BertForCoQA.from_pretrained(args.bert_model)
+        if args.local_rank == 0:
+            torch.distributed.barrier()
+
+        if args.fp16:
+            model.half()
+        model.to(device)
+        if args.local_rank != -1:
+            model = torch.nn.parallel.DistributedDataParallel(
+                model,
+                device_ids=[args.local_rank],
+                output_device=args.local_rank,
+                find_unused_parameters=True)
+        elif n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+            # model = DataParallelModel(model)
 
     if args.do_train:
         if args.local_rank in [-1, 0]:
             tb_writer = SummaryWriter()
         # Prepare data loader
-        # train_examples = read_squad_examples(input_file=args.train_file)
         cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}'.format(
             list(filter(None, args.bert_model.split('/'))).pop(),
             str(args.max_seq_length), str(args.doc_stride),
@@ -376,7 +392,8 @@ def main():
             with open(cached_train_features_file, "rb") as reader:
                 train_features = pickle.load(reader)
         except:
-            train_examples = read_squad_examples(input_file=args.train_file)
+            logger.info("  No cached file %s", cached_train_features_file)
+            train_examples = read_coqa_examples(input_file=args.train_file)
             train_features = convert_examples_to_features(
                 examples=train_examples,
                 tokenizer=tokenizer,
@@ -555,7 +572,7 @@ def main():
 
     if args.do_predict and (args.local_rank == -1
                             or torch.distributed.get_rank() == 0):
-        cached_eval_features_file = args.predict_file + 'bert-base-uncased_{0}_{1}_{2}'.format(
+        cached_eval_features_file = args.predict_file + '_bert-base-uncased_{0}_{1}_{2}'.format(
             str(args.max_seq_length), str(args.doc_stride),
             str(args.max_query_length))
         cached_eval_examples_file = args.predict_file + '_examples.pk'
@@ -565,7 +582,7 @@ def main():
             with open(cached_eval_features_file, "rb") as reader:
                 eval_features = pickle.load(reader)
         except:
-            eval_examples = read_squad_examples(input_file=args.predict_file)
+            eval_examples = read_coqa_examples(input_file=args.predict_file)
             eval_features = convert_examples_to_features(
                 examples=eval_examples,
                 tokenizer=tokenizer,
@@ -577,8 +594,8 @@ def main():
                         cached_eval_features_file)
             with open(cached_eval_examples_file, 'wb') as writer:
                 pickle.dump(eval_examples, writer)
-            # with open(cached_eval_features_file, "wb") as writer:
-            #     pickle.dump(eval_features, writer)
+            with open(cached_eval_features_file, "wb") as writer:
+                pickle.dump(eval_features, writer)
 
         logger.info("***** Running predictions *****")
         logger.info("  Num orig examples = %d", len(eval_examples))
@@ -638,6 +655,28 @@ def main():
                           args.do_lower_case, output_prediction_file,
                           output_nbest_file, output_null_log_odds_file,
                           args.verbose_logging, args.null_score_diff_threshold)
+    if args.do_F1 and (args.local_rank == -1
+                       or torch.distributed.get_rank() == 0):
+        logger.info("Start calculating F1")
+        cached_eval_examples_file = args.predict_file + '_examples.pk'
+        try:
+            with open(cached_eval_examples_file, 'rb') as reader:
+                eval_examples = pickle.load(reader)
+        except:
+            eval_examples = read_coqa_examples(input_file=args.predict_file)
+        pred_dict = json.load(
+            open(os.path.join(args.output_dir, "predictions.json"), 'rb'))
+        truth_dict = {}
+        for i in range(len(eval_examples)):
+            answers = eval_examples[i].additional_answers
+            tmp = eval_examples[i].orig_answer_text
+            if tmp not in answers:
+                answers.append(tmp)
+            truth_dict[eval_examples[i].qas_id] = answers
+        with open(os.path.join(args.output_dir, "truths.json"), 'w') as writer:
+            writer.write(json.dumps(truth_dict, indent=4) + '\n')
+        result, all_f1s = score(pred_dict, truth_dict)
+        logger.info(str(result))
 
 
 if __name__ == "__main__":
