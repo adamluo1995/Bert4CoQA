@@ -224,6 +224,13 @@ def main():
                         type=str,
                         default=None,
                         help='logging mode, `w` or `a`')
+    parser.add_argument('--wordrop_rate',
+                        type=float,
+                        default=0.,
+                        help='rate of wordrop')
+    parser.add_argument('--no_tensorboard',
+                        action='store_true',
+                        help='no tensor board')
     args = parser.parse_args()
     print(args)
 
@@ -301,7 +308,8 @@ def main():
     if args.do_train or args.do_predict:
         tokenizer = BertTokenizer.from_pretrained(
             args.bert_model, do_lower_case=args.do_lower_case)
-        model = BertForCoQA.from_pretrained(args.bert_model)
+        model = BertForCoQA.from_pretrained(args.bert_model,
+                                            mask_p=args.wordrop_rate)
         if args.local_rank == 0:
             torch.distributed.barrier()
 
@@ -319,7 +327,7 @@ def main():
             # model = DataParallelModel(model)
 
     if args.do_train:
-        if args.local_rank in [-1, 0]:
+        if args.local_rank in [-1, 0] and not args.no_tensorboard:
             tb_writer = SummaryWriter()
         # Prepare data loader
         cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}'.format(
@@ -441,7 +449,7 @@ def main():
         global_step = 0
 
         logger.info("***** Running training *****")
-        logger.info("  Num orig examples = %d+", 127000)
+        logger.info("  Num orig examples = %d", len(train_examples))
         logger.info("  Num split examples = %d", len(train_features))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num steps = %d", num_train_optimization_steps)
@@ -481,11 +489,13 @@ def main():
                     optimizer.zero_grad()
                     global_step += 1
                     if args.local_rank in [-1, 0]:
-                        if not args.fp16:
+                        if not args.fp16 and not args.no_tensorboard:
                             tb_writer.add_scalar('lr',
                                                  optimizer.get_lr()[0],
                                                  global_step)
-                        tb_writer.add_scalar('loss', loss.item(), global_step)
+                        if not args.no_tensorboard:
+                            tb_writer.add_scalar('loss', loss.item(),
+                                                 global_step)
                         if global_step % 100 == 0:
                             logger.info(
                                 "Step: {}\tLearning rate: {}\tLoss: {}\t".

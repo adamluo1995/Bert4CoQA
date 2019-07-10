@@ -18,7 +18,7 @@ On default setting, I train model base on bert_base_uncased on **2x RTX2080Ti** 
 make sure that:
 1. Put *train-coqa-v1.0.json* and *dev-coqa-v1.0.json* on the same dict with *run_coqa.py*
 2. The binary file, config file, and vocab file of bert_model in your bert_model dict name as *pytorch_model.bin*, *config.json*, *vocab.txt*
-3. Enough memory on GPU, you can tune *--train_batch_size*, *--gradient_accumulation_steps*, *--max_seq_length* and *--fp16* for memeory saving. 
+3. Enough memory on GPU [according to this](https://github.com/google-research/bert#out-of-memory-issues), you can tune *--train_batch_size*, *--gradient_accumulation_steps*, *--max_seq_length* and *--fp16* for memeory saving. 
 
 and run
 > python run_coqa.py --bert_model your_bertmodel_dir --output_dir your_outputdir \[optional\]

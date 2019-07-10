@@ -2,34 +2,51 @@ from pytorch_pretrained_bert.modeling import BertModel, BertPreTrainedModel
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.nn import CrossEntropyLoss
+import random
 
 
 class BertForCoQA(BertPreTrainedModel):
     def __init__(self,
                  config,
                  output_attentions=False,
-                 keep_multihead_output=False):
+                 keep_multihead_output=False,
+                 cls_alpha=1.0,
+                 mask_p=0.):
         super(BertForCoQA, self).__init__(config)
+        self.cls_alpha = cls_alpha
+        self.mask_p = mask_p
         self.output_attentions = output_attentions
         self.bert = BertModel(config,
                               output_attentions=output_attentions,
                               keep_multihead_output=keep_multihead_output)
-        self.qa_outputs_mid = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.qa_outputs_mid = nn.Linear(config.hidden_size, config.hidden_size)
         self.qa_outputs = nn.Linear(config.hidden_size, 2)
-        self.cls_outputs_mid = nn.Linear(config.hidden_size,
-                                         config.hidden_size)
+        # self.cls_outputs_mid = nn.Linear(config.hidden_size,
+        #                                  config.hidden_size)
         self.cls_outputs = nn.Linear(config.hidden_size, 4)
         self.apply(self.init_bert_weights)
 
-    def forward(self,
-                input_ids,
-                token_type_ids=None,
-                attention_mask=None,
-                start_positions=None,
-                end_positions=None,
-                cls_idx=None,
-                head_mask=None,
-                cls_alpha=1.0):
+    def forward(
+            self,
+            input_ids,
+            token_type_ids=None,
+            attention_mask=None,
+            start_positions=None,
+            end_positions=None,
+            cls_idx=None,
+            head_mask=None,
+    ):
+        # mask some words on inputs_ids
+        if self.training and self.mask_p > 0:
+            batch_size = input_ids.size(0)
+            for i in range(batch_size):
+                len_c, len_qc = token_type_ids[i].sum(
+                    dim=0).detach().item(), attention_mask[i].sum(
+                        dim=0).detach().item()
+                masked_idx = random.sample(range(len_qc - len_c, len_qc),
+                                           int(len_c * self.mask_p))
+                input_ids[i, masked_idx] = 100
+
         outputs = self.bert(input_ids,
                             token_type_ids,
                             attention_mask,
@@ -39,10 +56,8 @@ class BertForCoQA(BertPreTrainedModel):
             all_attentions, sequence_output, cls_outputs = outputs
         else:
             sequence_output, cls_outputs = outputs
-        span_logits = self.qa_outputs(
-            F.relu(self.qa_outputs_mid(sequence_output)))
-        cls_logits = self.cls_outputs(F.relu(
-            self.cls_outputs_mid(cls_outputs)))
+        span_logits = self.qa_outputs(sequence_output)
+        cls_logits = self.cls_outputs(cls_outputs)
 
         start_logits, end_logits = span_logits.split(1, dim=-1)
         start_logits = start_logits.squeeze(-1)
@@ -64,7 +79,8 @@ class BertForCoQA(BertPreTrainedModel):
             start_loss = span_loss_fct(start_logits, start_positions)
             end_loss = span_loss_fct(end_logits, end_positions)
             cls_loss = cls_loss_fct(cls_logits, cls_idx)
-            total_loss = (start_loss + end_loss) / 2 + cls_alpha * cls_loss
+            total_loss = (start_loss +
+                          end_loss) / 2 + self.cls_alpha * cls_loss
             return total_loss
         elif self.output_attentions:
             return all_attentions, start_logits, end_logits, cls_logits
