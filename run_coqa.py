@@ -535,8 +535,9 @@ def main():
 
     if args.do_predict and (args.local_rank == -1
                             or torch.distributed.get_rank() == 0):
-        cached_eval_features_file = args.predict_file + '_bert-base-uncased_{0}_{1}_{2}'.format(
-            str(args.max_seq_length), str(args.doc_stride),
+        bert_type = 'bert-base-uncased' if model.config.hidden_size == 768 else 'bert-large-uncased'
+        cached_eval_features_file = args.predict_file + '_{0}_{1}_{2}_{3}'.format(
+            bert_type, str(args.max_seq_length), str(args.doc_stride),
             str(args.max_query_length))
         cached_eval_examples_file = args.predict_file + '_examples.pk'
 
