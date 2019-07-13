@@ -5,7 +5,17 @@ It is implemented under PyTorch framework and [pytorch-pretrained-BERT](https://
 
 Code is basically combined from [run_squad.py](https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_squad.py)  and [SDNet](https://github.com/microsoft/SDNet).
 
-On default setting, I train model base on bert_base_uncased on **2x RTX2080Ti** for 3 epochs , batch_size=32, with fp16, and achieve **72.3 F1-score**. that can definitely be improved. I forgot the time-using but it's take no much time :)
+I train model with config:
+- --bert_model bert-base-uncased
+- --num_train_epochs 3.0
+- --do_lower_case
+- --max_seq_length 450
+- --doc_stride 150
+- --max_query_length 75
+
+on **2x RTX2080TI** in **1.5 Hour** and achieve **75.8 F1-score**. 
+
+that can definitely be improved :)
 
 **Not tested on multi-machine training**
 
