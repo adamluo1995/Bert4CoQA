@@ -231,6 +231,13 @@ def main():
     parser.add_argument('--no_tensorboard',
                         action='store_true',
                         help='no tensor board')
+    parser.add_argument('--qa_tag',
+                        action='store_true',
+                        help='add qa tag or not')
+    parser.add_argument('--history_len',
+                        type=int,
+                        default=2,
+                        help='length of history')
     args = parser.parse_args()
     print(args)
 
@@ -330,11 +337,13 @@ def main():
         if args.local_rank in [-1, 0] and not args.no_tensorboard:
             tb_writer = SummaryWriter()
         # Prepare data loader
-        cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}'.format(
+        cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}_{4}_{5}'.format(
             list(filter(None, args.bert_model.split('/'))).pop(),
             str(args.max_seq_length), str(args.doc_stride),
-            str(args.max_query_length))
-        cached_train_examples_file = args.train_file + '_examples.pk'
+            str(args.max_query_length), str(args.history_len), str(
+                args.qa_tag))
+        cached_train_examples_file = args.train_file + '_examples_{0}_{1}.pk'.format(
+            str(args.history_len), str(args.qa_tag))
 
         # try train_examples
         try:
@@ -342,7 +351,9 @@ def main():
                 train_examples = pickle.load(reader)
         except:
             logger.info("  No cached file %s", cached_train_examples_file)
-            train_examples = read_coqa_examples(input_file=args.train_file)
+            train_examples = read_coqa_examples(input_file=args.train_file,
+                                                history_len=args.history_len,
+                                                add_QA_tag=args.qa_tag)
             if args.local_rank == -1 or torch.distributed.get_rank() == 0:
                 logger.info("  Saving train examples into cached file %s",
                             cached_train_examples_file)
@@ -536,10 +547,12 @@ def main():
     if args.do_predict and (args.local_rank == -1
                             or torch.distributed.get_rank() == 0):
         bert_type = 'bert-base-uncased' if model.config.hidden_size == 768 else 'bert-large-uncased'
-        cached_eval_features_file = args.predict_file + '_{0}_{1}_{2}_{3}'.format(
+        cached_eval_features_file = args.predict_file + '_{0}_{1}_{2}_{3}_{4}_{5}'.format(
             bert_type, str(args.max_seq_length), str(args.doc_stride),
-            str(args.max_query_length))
-        cached_eval_examples_file = args.predict_file + '_examples.pk'
+            str(args.max_query_length), str(args.history_len), str(
+                args.qa_tag))
+        cached_eval_examples_file = args.predict_file + '_examples_{0}_{1}.pk'.format(
+            str(args.history_len), str(args.qa_tag))
 
         # try eval_examples
         try:
@@ -547,7 +560,7 @@ def main():
                 eval_examples = pickle.load(reader)
         except:
             logger.info("No cached file: %s", cached_eval_examples_file)
-            eval_examples = read_coqa_examples(input_file=args.predict_file)
+            eval_examples = read_coqa_examples(input_file=args.predict_file, history_len=args.history_len, add_QA_tag=args.qa_tag)
             logger.info("  Saving eval examples into cached file %s",
                         cached_eval_examples_file)
             with open(cached_eval_examples_file, 'wb') as writer:
