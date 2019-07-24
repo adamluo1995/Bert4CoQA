@@ -112,9 +112,9 @@ def main():
     parser.add_argument("--do_predict",
                         action='store_true',
                         help="Whether to run eval on the dev set.")
-    parser.add_argument("--do_F1",
-                        action='store_true',
-                        help="Whether to calculating F1 score")
+    # parser.add_argument("--do_F1",
+    #                     action='store_true',
+    #                     help="Whether to calculating F1 score") # we don't talk anymore. please use official evaluation scripts
     parser.add_argument("--train_batch_size",
                         default=32,
                         type=int,
@@ -560,7 +560,9 @@ def main():
                 eval_examples = pickle.load(reader)
         except:
             logger.info("No cached file: %s", cached_eval_examples_file)
-            eval_examples = read_coqa_examples(input_file=args.predict_file, history_len=args.history_len, add_QA_tag=args.qa_tag)
+            eval_examples = read_coqa_examples(input_file=args.predict_file,
+                                               history_len=args.history_len,
+                                               add_QA_tag=args.qa_tag)
             logger.info("  Saving eval examples into cached file %s",
                         cached_eval_examples_file)
             with open(cached_eval_examples_file, 'wb') as writer:
@@ -642,28 +644,31 @@ def main():
                           args.do_lower_case, output_prediction_file,
                           output_nbest_file, output_null_log_odds_file,
                           args.verbose_logging, args.null_score_diff_threshold)
-    if args.do_F1 and (args.local_rank == -1
-                       or torch.distributed.get_rank() == 0):
-        logger.info("Start calculating F1")
-        cached_eval_examples_file = args.predict_file + '_examples.pk'
-        try:
-            with open(cached_eval_examples_file, 'rb') as reader:
-                eval_examples = pickle.load(reader)
-        except:
-            eval_examples = read_coqa_examples(input_file=args.predict_file)
-        pred_dict = json.load(
-            open(os.path.join(args.output_dir, "predictions.json"), 'rb'))
-        truth_dict = {}
-        for i in range(len(eval_examples)):
-            answers = eval_examples[i].additional_answers
-            tmp = eval_examples[i].orig_answer_text
-            if tmp not in answers:
-                answers.append(tmp)
-            truth_dict[eval_examples[i].qas_id] = answers
-        with open(os.path.join(args.output_dir, "truths.json"), 'w') as writer:
-            writer.write(json.dumps(truth_dict, indent=4) + '\n')
-        result, all_f1s = score(pred_dict, truth_dict)
-        logger.info(str(result))
+
+    # we don't do F1 any more
+
+    # if args.do_F1 and (args.local_rank == -1
+    #                    or torch.distributed.get_rank() == 0):
+    #     logger.info("Start calculating F1")
+    #     cached_eval_examples_file = args.predict_file + '_examples.pk'
+    #     try:
+    #         with open(cached_eval_examples_file, 'rb') as reader:
+    #             eval_examples = pickle.load(reader)
+    #     except:
+    #         eval_examples = read_coqa_examples(input_file=args.predict_file)
+    #     pred_dict = json.load(
+    #         open(os.path.join(args.output_dir, "predictions.json"), 'rb'))
+    #     truth_dict = {}
+    #     for i in range(len(eval_examples)):
+    #         answers = eval_examples[i].additional_answers
+    #         tmp = eval_examples[i].orig_answer_text
+    #         if tmp not in answers:
+    #             answers.append(tmp)
+    #         truth_dict[eval_examples[i].qas_id] = answers
+    #     with open(os.path.join(args.output_dir, "truths.json"), 'w') as writer:
+    #         writer.write(json.dumps(truth_dict, indent=4) + '\n')
+    #     result, all_f1s = score(pred_dict, truth_dict)
+    #     logger.info(str(result))
 
 
 if __name__ == "__main__":

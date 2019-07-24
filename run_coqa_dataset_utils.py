@@ -632,7 +632,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             "cls_idx",
         ])
 
-    all_predictions = collections.OrderedDict()
+    # all_predictions = collections.OrderedDict()
+    all_predictions = []
     all_nbest_json = collections.OrderedDict()
     scores_diff_json = collections.OrderedDict()
 
@@ -879,8 +880,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         assert len(nbest_json) >= 1
 
         
-
-        all_predictions[example.qas_id] = confirm_preds(nbest_json)
+        _id, _turn_id = example.qas_id.split()
+        all_predictions.append({'id': _id, 'turn_id': int(_turn_id), 'answer': confirm_preds(nbest_json)})
         # if not version_2_with_negative:
         #     all_predictions[example.qas_id] = nbest_json[0]["text"]
         # else:

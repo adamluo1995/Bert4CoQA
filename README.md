@@ -13,7 +13,7 @@ I train model with config:
 - --doc_stride 150
 - --max_query_length 75
 
-on **2x RTX2080TI** in **1.5 Hour** and achieve **75.8 F1-score**. 
+on **2x RTX2080TI** in **1.5 Hour** and achieve **76.5 F1-score**. 
 
 that can definitely be improved :)
 
@@ -32,6 +32,9 @@ make sure that:
 
 and run
 > python run_coqa.py --bert_model your_bertmodel_dir --output_dir your_outputdir \[optional\]
+
+for calculating F1-score, use *evaluate-v1.0.py*
+> python evaluate-v1.0.py --data-file <path_to_coqa-dev-v1.0.json> --pred-file <path_to_predictions.json>
 
 ## Contact
 If you have any questions, please new an issue or contact me, adamluo1995@gmail.com.
