@@ -1,9 +1,8 @@
 # Bert4CoQA
 ## Introduction
-This code is example demonstrating how to apply [Bert](https://arxiv.org/abs/1810.04805) on [CoQA Challenge](https://stanfordnlp.github.io/coqa/). 
-It is implemented under PyTorch framework and [Transformer](https://github.com/huggingface/pytorch-pretrained-BERT).
+This code is example demonstrating how to apply [Bert](https://arxiv.org/abs/1810.04805) on [CoQA Challenge](https://stanfordnlp.github.io/coqa/).
 
-Code is basically combined from [run_squad.py](https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_squad.py), [SDNet](https://github.com/microsoft/SDNet) and [SMRCToolkit](https://github.com/sogou/SMRCToolkit).
+Code is basically combined from [Transformer](https://github.com/huggingface/pytorch-pretrained-BERT), [run_squad.py](https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_squad.py), [SDNet](https://github.com/microsoft/SDNet) and [SMRCToolkit](https://github.com/sogou/SMRCToolkit).
 
 I train model with config:
 - --type bert
