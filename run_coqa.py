@@ -34,12 +34,9 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from tensorboardX import SummaryWriter
-
 from pytorch_pretrained_bert.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from modeling import BertForCoQA
-from pytorch_pretrained_bert.optimization import BertAdam, WarmupLinearSchedule
-from pytorch_pretrained_bert.tokenization import BertTokenizer
+from bert import AdamW, WarmupLinearSchedule, BertTokenizer
 
 from run_coqa_dataset_utils import read_coqa_examples, convert_examples_to_features, RawResult, write_predictions, score
 # from parallel import DataParallelCriterion, DataParallelModel, gather
@@ -56,6 +53,11 @@ def main():
     parser = argparse.ArgumentParser()
 
     ## Required parameters
+    parser.add_argument("--type",
+                        default=None,
+                        type=str,
+                        required=True,
+                        help=".")
     parser.add_argument(
         "--bert_model",
         default=None,
@@ -86,7 +88,7 @@ def main():
         help="CoQA json for predictions. E.g., coqa-dev-v1.1.json")
     parser.add_argument(
         "--max_seq_length",
-        default=384,
+        default=512,
         type=int,
         help=
         "The maximum total input sequence length after WordPiece tokenization. Sequences "
@@ -116,11 +118,11 @@ def main():
     #                     action='store_true',
     #                     help="Whether to calculating F1 score") # we don't talk anymore. please use official evaluation scripts
     parser.add_argument("--train_batch_size",
-                        default=32,
+                        default=48,
                         type=int,
                         help="Total batch size for training.")
     parser.add_argument("--predict_batch_size",
-                        default=128,
+                        default=48,
                         type=int,
                         help="Total batch size for predictions.")
     parser.add_argument("--learning_rate",
@@ -128,12 +130,12 @@ def main():
                         type=float,
                         help="The initial learning rate for Adam.")
     parser.add_argument("--num_train_epochs",
-                        default=3.0,
+                        default=2.0,
                         type=float,
                         help="Total number of training epochs to perform.")
     parser.add_argument(
         "--warmup_proportion",
-        default=0.1,
+        default=0.06,
         type=float,
         help=
         "Proportion of training to perform linear learning rate warmup for. E.g., 0.1 = 10%% "
@@ -161,10 +163,6 @@ def main():
     parser.add_argument("--no_cuda",
                         action='store_true',
                         help="Whether not to use CUDA when available")
-    parser.add_argument("--cuda_visiable",
-                        type=str,
-                        default='0',
-                        help="which gpu to use")
     parser.add_argument('--seed',
                         type=int,
                         default=42,
@@ -190,6 +188,9 @@ def main():
         '--fp16',
         action='store_true',
         help="Whether to use 16-bit float precision instead of 32-bit")
+    parser.add_argument('--fp16_opt_level', type=str, default='O1',
+                        help="For fp16: Apex AMP optimization level selected in ['O0', 'O1', 'O2', and 'O3']."
+                             "See details at https://nvidia.github.io/apex/amp.html")
     parser.add_argument('--overwrite_output_dir',
                         action='store_true',
                         help="Overwrite the content of the output directory")
@@ -201,6 +202,11 @@ def main():
         "Loss scaling to improve fp16 numeric stability. Only used when fp16 set to True.\n"
         "0 (default value): dynamic loss scaling.\n"
         "Positive power of 2: static loss scaling value.\n")
+    parser.add_argument(
+        '--weight_decay',
+        type=float,
+        default=0,
+        help="")
     parser.add_argument(
         '--null_score_diff_threshold',
         type=float,
@@ -224,11 +230,7 @@ def main():
                         type=str,
                         default=None,
                         help='logging mode, `w` or `a`')
-    parser.add_argument('--wordrop_rate',
-                        type=float,
-                        default=0.,
-                        help='rate of wordrop')
-    parser.add_argument('--no_tensorboard',
+    parser.add_argument('--tensorboard',
                         action='store_true',
                         help='no tensor board')
     parser.add_argument('--qa_tag',
@@ -238,6 +240,12 @@ def main():
                         type=int,
                         default=2,
                         help='length of history')
+    parser.add_argument("--adam_epsilon", default=1e-8, type=float,
+                        help="Epsilon for Adam optimizer.")
+    parser.add_argument("--max_grad_norm", default=1.0, type=float,
+                        help="Max gradient norm.")
+    parser.add_argument('--logging_steps', type=int, default=50,
+                        help="Log every X updates steps.")
     args = parser.parse_args()
     print(args)
 
@@ -250,7 +258,6 @@ def main():
         ptvsd.wait_for_attach()
 
     if args.local_rank == -1 or args.no_cuda:
-        os.environ['CUDA_VISIBLE_DEVICES'] = args.cuda_visiable
         device = torch.device("cuda" if torch.cuda.is_available()
                               and not args.no_cuda else "cpu")
         n_gpu = torch.cuda.device_count()
@@ -315,33 +322,21 @@ def main():
     if args.do_train or args.do_predict:
         tokenizer = BertTokenizer.from_pretrained(
             args.bert_model, do_lower_case=args.do_lower_case)
-        model = BertForCoQA.from_pretrained(args.bert_model,
-                                            mask_p=args.wordrop_rate)
+        model = BertForCoQA.from_pretrained(args.bert_model)
         if args.local_rank == 0:
             torch.distributed.barrier()
 
-        if args.fp16:
-            model.half()
         model.to(device)
-        if args.local_rank != -1:
-            model = torch.nn.parallel.DistributedDataParallel(
-                model,
-                device_ids=[args.local_rank],
-                output_device=args.local_rank,
-                find_unused_parameters=True)
-        elif n_gpu > 1:
-            model = torch.nn.DataParallel(model)
-            # model = DataParallelModel(model)
 
     if args.do_train:
-        if args.local_rank in [-1, 0] and not args.no_tensorboard:
+        if args.local_rank in [-1, 0] and args.tensorboard:
+            from tensorboardX import SummaryWriter
             tb_writer = SummaryWriter()
         # Prepare data loader
-        cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}_{4}_{5}'.format(
-            list(filter(None, args.bert_model.split('/'))).pop(),
-            str(args.max_seq_length), str(args.doc_stride),
-            str(args.max_query_length), str(args.history_len), str(
-                args.qa_tag))
+        cached_train_features_file = args.train_file + '_{0}_{1}_{2}_{3}_{4}_{5}_{6}'.format(
+            args.type, str(args.max_seq_length), str(args.doc_stride),
+            str(args.max_query_length), str(args.max_answer_length),
+            str(args.history_len), str(args.qa_tag))
         cached_train_examples_file = args.train_file + '_examples_{0}_{1}.pk'.format(
             str(args.history_len), str(args.qa_tag))
 
@@ -359,6 +354,9 @@ def main():
                             cached_train_examples_file)
                 with open(cached_train_examples_file, "wb") as writer:
                     pickle.dump(train_examples, writer)
+
+        # print('DEBUG')
+        # exit()
 
         # try train_features
         try:
@@ -379,6 +377,9 @@ def main():
                 with open(cached_train_features_file, "wb") as writer:
                     pickle.dump(train_features, writer)
 
+        # print('DEBUG')
+        # exit()
+
         all_input_ids = torch.tensor([f.input_ids for f in train_features],
                                      dtype=torch.long)
         all_input_mask = torch.tensor([f.input_mask for f in train_features],
@@ -389,11 +390,14 @@ def main():
             [f.start_position for f in train_features], dtype=torch.long)
         all_end_positions = torch.tensor(
             [f.end_position for f in train_features], dtype=torch.long)
+        all_rational_mask = torch.tensor(
+            [f.rational_mask for f in train_features], dtype=torch.long)
         all_cls_idx = torch.tensor([f.cls_idx for f in train_features],
                                    dtype=torch.long)
         train_data = TensorDataset(all_input_ids, all_input_mask,
                                    all_segment_ids, all_start_positions,
-                                   all_end_positions, all_cls_idx)
+                                   all_end_positions, all_rational_mask,
+                                   all_cls_idx)
         if args.local_rank == -1:
             train_sampler = RandomSampler(train_data)
         else:
@@ -422,7 +426,7 @@ def main():
                 if not any(nd in n for nd in no_decay)
             ],
             'weight_decay':
-            0.01
+            args.weight_decay
         }, {
             'params':
             [p for n, p in param_optimizer if any(nd in n for nd in no_decay)],
@@ -430,34 +434,26 @@ def main():
             0.0
         }]
 
+        optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
+        scheduler = WarmupLinearSchedule(optimizer, warmup_steps=int(args.warmup_proportion * num_train_optimization_steps), t_total=num_train_optimization_steps)
+
         if args.fp16:
             try:
-                from apex.optimizers import FP16_Optimizer
-                from apex.optimizers import FusedAdam
+                from apex import amp
             except ImportError:
-                raise ImportError(
-                    "Please install apex from https://www.github.com/nvidia/apex to use distributed and fp16 training."
-                )
-
-            optimizer = FusedAdam(optimizer_grouped_parameters,
-                                  lr=args.learning_rate,
-                                  bias_correction=False,
-                                  max_grad_norm=1.0)
-            if args.loss_scale == 0:
-                optimizer = FP16_Optimizer(optimizer, dynamic_loss_scale=True)
-            else:
-                optimizer = FP16_Optimizer(optimizer,
-                                           static_loss_scale=args.loss_scale)
-            warmup_linear = WarmupLinearSchedule(
-                warmup=args.warmup_proportion,
-                t_total=num_train_optimization_steps)
-        else:
-            optimizer = BertAdam(optimizer_grouped_parameters,
-                                 lr=args.learning_rate,
-                                 warmup=args.warmup_proportion,
-                                 t_total=num_train_optimization_steps)
+                raise ImportError("Please install apex from https://www.github.com/nvidia/apex to use fp16 training.")
+            model, optimizer = amp.initialize(model, optimizer, opt_level=args.fp16_opt_level)
+        
+        if n_gpu > 1:
+            model = torch.nn.DataParallel(model)
+        
+        if args.local_rank != -1:
+            model = torch.nn.parallel.DistributedDataParallel(model, device_ids=[args.local_rank],
+                                                            output_device=args.local_rank,
+                                                            find_unused_parameters=True)
 
         global_step = 0
+        tr_loss, logging_loss = 0.0, 0.0
 
         logger.info("***** Running training *****")
         logger.info("  Num orig examples = %d", len(train_examples))
@@ -471,13 +467,13 @@ def main():
                     tqdm(train_dataloader,
                          desc="Iteration",
                          disable=args.local_rank not in [-1, 0])):
-                if n_gpu == 1:
-                    batch = tuple(
-                        t.to(device)
-                        for t in batch)  # multi-gpu does scattering it-self
-                input_ids, input_mask, segment_ids, start_positions, end_positions, cls_idx = batch
+                batch = tuple(
+                    t.to(device)
+                    for t in batch)  # multi-gpu does scattering it-self
+                input_ids, input_mask, segment_ids, start_positions, end_positions, rational_mask, cls_idx = batch
                 loss = model(input_ids, segment_ids, input_mask,
-                             start_positions, end_positions, cls_idx)
+                             start_positions, end_positions, rational_mask,
+                             cls_idx)
                 # loss = gather(loss, 0)
                 if n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu.
@@ -485,37 +481,29 @@ def main():
                     loss = loss / args.gradient_accumulation_steps
 
                 if args.fp16:
-                    optimizer.backward(loss)
+                    with amp.scale_loss(loss, optimizer) as scaled_loss:
+                        scaled_loss.backward()
+                    if args.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(amp.master_params(optimizer), args.max_grad_norm)
                 else:
                     loss.backward()
+                    if args.max_grad_norm > 0:
+                        torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                
+                tr_loss += loss.item()
+
                 if (step + 1) % args.gradient_accumulation_steps == 0:
-                    if args.fp16:
-                        # modify learning rate with special warm up BERT uses
-                        # if args.fp16 is False, BertAdam is used and handles this automatically
-                        lr_this_step = args.learning_rate * warmup_linear.get_lr(
-                            global_step, args.warmup_proportion)
-                        for param_group in optimizer.param_groups:
-                            param_group['lr'] = lr_this_step
                     optimizer.step()
-                    optimizer.zero_grad()
+                    scheduler.step()  # Update learning rate schedule
+                    model.zero_grad()
                     global_step += 1
-                    if args.local_rank in [-1, 0]:
-                        if not args.fp16 and not args.no_tensorboard:
-                            tb_writer.add_scalar('lr',
-                                                 optimizer.get_lr()[0],
-                                                 global_step)
-                        if not args.no_tensorboard:
-                            tb_writer.add_scalar('loss', loss.item(),
-                                                 global_step)
-                        if global_step % 100 == 0:
-                            logger.info(
-                                "Step: {}\tLearning rate: {}\tLoss: {}\t".
-                                format(
-                                    global_step,
-                                    optimizer.get_lr()[0]
-                                    if not args.fp16 else 'unknown',
-                                    loss.item() *
-                                    args.gradient_accumulation_steps))
+                    if args.local_rank in [-1, 0] and args.logging_steps > 0 and global_step % args.logging_steps == 0:
+                        if args.tensorboard:
+                            tb_writer.add_scalar('lr', scheduler.get_lr()[0], global_step)
+                            tb_writer.add_scalar('loss', (tr_loss - logging_loss)/args.logging_steps, global_step)
+                        else:
+                            logger.info('Step: {}\tLearning rate: {}\tLoss: {}\t'.format(global_step, scheduler.get_lr()[0], (tr_loss - logging_loss)/args.logging_steps))
+                        logging_loss = tr_loss
 
     if args.do_train and (args.local_rank == -1
                           or torch.distributed.get_rank() == 0):
@@ -546,11 +534,10 @@ def main():
 
     if args.do_predict and (args.local_rank == -1
                             or torch.distributed.get_rank() == 0):
-        bert_type = 'bert-base-uncased' if model.config.hidden_size == 768 else 'bert-large-uncased'
-        cached_eval_features_file = args.predict_file + '_{0}_{1}_{2}_{3}_{4}_{5}'.format(
-            bert_type, str(args.max_seq_length), str(args.doc_stride),
-            str(args.max_query_length), str(args.history_len), str(
-                args.qa_tag))
+        cached_eval_features_file = args.predict_file + '_{0}_{1}_{2}_{3}_{4}_{5}_{6}'.format(
+            args.type, str(args.max_seq_length), str(args.doc_stride),
+            str(args.max_query_length), str(args.max_answer_length),
+            str(args.history_len), str(args.qa_tag))
         cached_eval_examples_file = args.predict_file + '_examples_{0}_{1}.pk'.format(
             str(args.history_len), str(args.qa_tag))
 
@@ -586,6 +573,9 @@ def main():
             with open(cached_eval_features_file, "wb") as writer:
                 pickle.dump(eval_features, writer)
 
+        # print('DEBUG')
+        # exit()
+
         logger.info("***** Running predictions *****")
         logger.info("  Num orig examples = %d", len(eval_examples))
         logger.info("  Num split examples = %d", len(eval_features))
@@ -620,19 +610,23 @@ def main():
             input_mask = input_mask.to(device)
             segment_ids = segment_ids.to(device)
             with torch.no_grad():
-                batch_start_logits, batch_end_logits, batch_cls_logits = model(
+                batch_start_logits, batch_end_logits, batch_yes_logits, batch_no_logits, batch_unk_logits = model(
                     input_ids, segment_ids, input_mask)
             for i, example_index in enumerate(example_indices):
                 start_logits = batch_start_logits[i].detach().cpu().tolist()
                 end_logits = batch_end_logits[i].detach().cpu().tolist()
-                cls_logits = batch_cls_logits[i].detach().cpu().tolist()
+                yes_logits = batch_yes_logits[i].detach().cpu().tolist()
+                no_logits = batch_no_logits[i].detach().cpu().tolist()
+                unk_logits = batch_unk_logits[i].detach().cpu().tolist()
                 eval_feature = eval_features[example_index.item()]
                 unique_id = int(eval_feature.unique_id)
                 all_results.append(
                     RawResult(unique_id=unique_id,
                               start_logits=start_logits,
                               end_logits=end_logits,
-                              cls_logits=cls_logits))
+                              yes_logits=yes_logits,
+                              no_logits=no_logits,
+                              unk_logits=unk_logits))
         output_prediction_file = os.path.join(args.output_dir,
                                               "predictions.json")
         output_nbest_file = os.path.join(args.output_dir,

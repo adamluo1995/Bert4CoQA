@@ -1,28 +1,34 @@
 # Bert4CoQA
 ## Introduction
 This code is example demonstrating how to apply [Bert](https://arxiv.org/abs/1810.04805) on [CoQA Challenge](https://stanfordnlp.github.io/coqa/). 
-It is implemented under PyTorch framework and [pytorch-pretrained-BERT](https://github.com/huggingface/pytorch-pretrained-BERT).
+It is implemented under PyTorch framework and [Transformer](https://github.com/huggingface/pytorch-pretrained-BERT).
 
-Code is basically combined from [run_squad.py](https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_squad.py)  and [SDNet](https://github.com/microsoft/SDNet).
+Code is basically combined from [run_squad.py](https://github.com/huggingface/pytorch-pretrained-BERT/blob/master/examples/run_squad.py), [SDNet](https://github.com/microsoft/SDNet) and [SMRCToolkit](https://github.com/sogou/SMRCToolkit).
 
 I train model with config:
+- --type bert
 - --bert_model bert-base-uncased
-- --num_train_epochs 3.0
+- --num_train_epochs 2.0
 - --do_lower_case
-- --max_seq_length 450
-- --doc_stride 150
-- --max_query_length 75
+- --max_seq_length 512
+- --doc_stride 128
+- --max_query_length 64
+- --train_batch_size 12
+- --learning_rate 3e-5
+- --warmup_proportion 0.1
+- --max_grad_norm -1
+- --weight_decay 0.01
+- --fp16
 
-on **2x RTX2080TI** in **1.5 Hour** and achieve **76.5 F1-score**. 
+on **1x TITAN Xp** in **3 Hours** and achieve **78.0 F1-score** on dev-set. 
 
-that can definitely be improved :)
+That can definitely be improved, and if you found better hyper-parameters, you are welcome to raise an issue :)
 
 **Not tested on multi-machine training**
 
 ## Requirement
 - pytorch (tested on *1.1.0*)
 - spacy (tested on *2.0.16*)
-- tensorBoardX (Not necessary)
 - tqdm
 ## How to run
 make sure that:
