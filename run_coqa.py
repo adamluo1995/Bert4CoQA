@@ -85,7 +85,7 @@ def main():
         "--predict_file",
         default=None,
         type=str,
-        help="CoQA json for predictions. E.g., coqa-dev-v1.1.json")
+        help="CoQA json for predictions. E.g., coqa-dev-v1.0.json")
     parser.add_argument(
         "--max_seq_length",
         default=512,
@@ -292,9 +292,9 @@ def main():
     if n_gpu > 0:
         torch.cuda.manual_seed_all(args.seed)
 
-    if not args.do_train and not args.do_predict and not args.do_F1:
+    if not args.do_train and not args.do_predict:
         raise ValueError(
-            "At least one of `do_train` or `do_predict` or `do_F1` must be True."
+            "At least one of `do_train` or `do_predict` must be True."
         )
 
     if args.do_train:

@@ -37,6 +37,7 @@ make sure that:
 
 and run
 > python run_coqa.py --bert_model your_bertmodel_dir --output_dir your_outputdir \[optional\]
+(or edit and run *run.sh*)
 
 for calculating F1-score, use *evaluate-v1.0.py*
 > python evaluate-v1.0.py --data-file <path_to_coqa-dev-v1.0.json> --pred-file <path_to_predictions.json>

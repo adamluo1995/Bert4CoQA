@@ -48,6 +48,8 @@ class CoqaExample(object):
             orig_answer_text=None,
             start_position=None,
             end_position=None,
+            rational_start_position=None,
+            rational_end_position=None,
             additional_answers=None,
     ):
         self.qas_id = qas_id
@@ -57,6 +59,8 @@ class CoqaExample(object):
         self.start_position = start_position
         self.end_position = end_position
         self.additional_answers = additional_answers
+        self.rational_start_position = rational_start_position
+        self.rational_end_position = rational_end_position
 
     def __str__(self):
         return self.__repr__()
@@ -88,7 +92,8 @@ class InputFeatures(object):
                  segment_ids,
                  start_position=None,
                  end_position=None,
-                 cls_idx=None):
+                 cls_idx=None,
+                 rational_mask=None):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -101,6 +106,7 @@ class InputFeatures(object):
         self.start_position = start_position
         self.end_position = end_position
         self.cls_idx = cls_idx
+        self.rational_mask = rational_mask
 
 
 def read_coqa_examples(input_file, history_len=2, add_QA_tag=False):
@@ -311,6 +317,8 @@ def read_coqa_examples(input_file, history_len=2, add_QA_tag=False):
             while len(chosen_text) > 0 and is_whitespace(chosen_text[-1]):
                 chosen_text = chosen_text[:-1]
                 end -= 1
+            r_start, r_end = find_span(_datum['raw_context_offsets'], start,
+                                       end)
             input_text = _qas['answer'].strip().lower()
             if input_text in chosen_text:
                 p = chosen_text.find(input_text)
@@ -343,6 +351,8 @@ def read_coqa_examples(input_file, history_len=2, add_QA_tag=False):
                 orig_answer_text=_qas['raw_answer'],
                 start_position=_qas['answer_span'][0],
                 end_position=_qas['answer_span'][1],
+                rational_start_position=r_start,
+                rational_end_position=r_end,
                 additional_answers=_qas['additional_answers'] if 'additional_answers' in _qas else None,
                 )
             examples.append(example)
@@ -383,6 +393,19 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
         tok_start_position = None
         tok_end_position = None
+        tok_r_start_position, tok_r_end_position = None, None
+        tok_pre_sp, tok_pre_ep = [], []
+
+        # rational part
+        tok_r_start_position = orig_to_tok_index[
+            example.rational_start_position]
+        if example.rational_end_position < len(example.doc_tokens) - 1:
+            tok_r_end_position = orig_to_tok_index[
+                example.rational_end_position + 1] - 1
+        else:
+            tok_r_end_position = len(all_doc_tokens) - 1
+        # rational part end
+
         if cls_idx < 3:
             tok_start_position, tok_end_position = 0,0
         else:
@@ -460,6 +483,32 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
 
             start_position = None
             end_position = None
+            rational_start_position = None
+            ration_end_position = None
+
+            # rational_part
+            doc_start = doc_span.start
+            doc_end = doc_span.start + doc_span.length - 1
+            out_of_span = False
+            if example.rational_start_position == -1 or not (
+                    tok_r_start_position >= doc_start
+                    and tok_r_end_position <= doc_end):
+                out_of_span = True
+            if out_of_span:
+                rational_start_position = 0
+                rational_end_position = 0
+            else:
+                doc_offset = len(query_tokens) + 2
+                rational_start_position = tok_r_start_position - doc_start + doc_offset
+                rational_end_position = tok_r_end_position - doc_start + doc_offset
+            # rational_part_end
+
+            rational_mask = [0] * len(input_ids)
+            if not out_of_span:
+                rational_mask[rational_start_position:rational_end_position +
+                              1] = [1] * (rational_end_position -
+                                          rational_start_position + 1)
+
             if cls_idx >= 3:
                 # For training, if our document chunk does not contain an annotation
                 # we throw it out, since there is nothing to predict.
@@ -520,7 +569,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                               segment_ids=segment_ids,
                               start_position=start_position,
                               end_position=end_position,
-                              cls_idx=slice_cls_idx))
+                              cls_idx=slice_cls_idx,
+                              rational_mask=rational_mask))
             unique_id += 1
 
     return features
