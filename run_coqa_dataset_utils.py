@@ -652,7 +652,7 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
 
 
 RawResult = collections.namedtuple(
-    "RawResult", ["unique_id", "start_logits", "end_logits", "cls_logits"])
+    "RawResult", ["unique_id", "start_logits", "end_logits", "yes_logits", "no_logits", "unk_logits"])
 
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
@@ -676,9 +676,7 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             "feature_index",
             "start_index",
             "end_index",
-            "start_logit",
-            "end_logit",
-            "cls_logit",
+            "score",
             "cls_idx",
         ])
 
@@ -687,17 +685,19 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     all_nbest_json = collections.OrderedDict()
     scores_diff_json = collections.OrderedDict()
 
-    for (example_index, example) in enumerate(tqdm(all_examples, desc="Writing preditions")):
+    for (example_index,
+         example) in enumerate(tqdm(all_examples, desc="Writing preditions")):
         features = example_index_to_features[example_index]
 
         prelim_predictions = []
         # keep track of the minimum score of null start+end of position 0
         part_prelim_predictions = []
 
-        score_yes, score_no, score_span, score_noanswer = -float(
-            'INF'), -float('INF'), -float('INF'), float('INF')
-        min_noanswer_feature_index, max_yes_feature_index, max_no_feature_index, max_span_feature_index = 0, 0, 0, 0  # the paragraph slice with min null score
+        score_yes, score_no, score_span, score_unk = -float('INF'), -float(
+            'INF'), -float('INF'), float('INF')
+        min_unk_feature_index, max_yes_feature_index, max_no_feature_index, max_span_feature_index = -1, -1, -1, -1  # the paragraph slice with min null score
         max_span_start_indexes, max_span_end_indexes = [], []
+        max_start_index, max_end_index = -1, -1
         # null_start_logit = 0  # the start logit at the slice with min null score
         # null_end_logit = 0  # the end logit at the slice with min null score
 
@@ -706,108 +706,81 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
             # if we could have irrelevant answers, get the min score of irrelevant
             # feature_null_score = result.start_logits[0] + result.end_logits[0]
 
-            feature_yes_score, feature_no_score, feature_noanswer_score, feature_span_score = result.cls_logits
+            # feature_yes_score, feature_no_score, feature_unk_score, feature_span_score = result.cls_logits
 
-            if feature_noanswer_score < score_noanswer:  # find min score_noanswer
-                score_noanswer = feature_noanswer_score
-                min_noanswer_feature_index = feature_index
+            feature_yes_score, feature_no_score, feature_unk_score = result.yes_logits[
+                0] * 2, result.no_logits[0] * 2, result.unk_logits[0] * 2
+            start_indexes, end_indexes = _get_best_indexes(
+                result.start_logits,
+                n_best_size), _get_best_indexes(result.end_logits, n_best_size)
+
+            for start_index in start_indexes:
+                for end_index in end_indexes:
+                    if start_index >= len(feature.tokens):
+                        continue
+                    if end_index >= len(feature.tokens):
+                        continue
+                    if start_index not in feature.token_to_orig_map:
+                        continue
+                    if end_index not in feature.token_to_orig_map:
+                        continue
+                    if not feature.token_is_max_context.get(
+                            start_index, False):
+                        continue
+                    if end_index < start_index:
+                        continue
+                    length = end_index - start_index + 1
+                    if length > max_answer_length:
+                        continue
+                    feature_span_score = result.start_logits[
+                        start_index] + result.end_logits[end_index]
+                    prelim_predictions.append(
+                        _PrelimPrediction(feature_index=feature_index,
+                                          start_index=start_index,
+                                          end_index=end_index,
+                                          score=feature_span_score,
+                                          cls_idx=3))
+
+            if feature_unk_score < score_unk:  # find min score_noanswer
+                score_unk = feature_unk_score
+                min_unk_feature_index = feature_index
             if feature_yes_score > score_yes:  # find max score_yes
                 score_yes = feature_yes_score
                 max_yes_feature_index = feature_index
             if feature_no_score > score_no:  # find max score_no
                 score_no = feature_no_score
                 max_no_feature_index = feature_index
-            if feature_span_score > score_span:  # find max score_span
-                score_span = feature_span_score
-                max_span_feature_index = feature_index
-                start_indexes = _get_best_indexes(result.start_logits,
-                                                  n_best_size)
-                end_indexes = _get_best_indexes(result.end_logits, n_best_size)
-                max_span_start_indexes, max_span_end_indexes = start_indexes, end_indexes
 
         prelim_predictions.append(
-            _PrelimPrediction(feature_index=min_noanswer_feature_index,
+            _PrelimPrediction(feature_index=min_unk_feature_index,
                               start_index=0,
                               end_index=0,
-                              start_logit=-float('INF'),
-                              end_logit=-float('INF'),
-                              cls_logit=score_noanswer,
+                              score=score_unk,
                               cls_idx=2))
         prelim_predictions.append(
             _PrelimPrediction(feature_index=max_yes_feature_index,
                               start_index=0,
                               end_index=0,
-                              start_logit=-float('INF'),
-                              end_logit=-float('INF'),
-                              cls_logit=score_yes,
+                              score=score_yes,
                               cls_idx=0))
         prelim_predictions.append(
             _PrelimPrediction(feature_index=max_no_feature_index,
                               start_index=0,
                               end_index=0,
-                              start_logit=-float('INF'),
-                              end_logit=-float('INF'),
-                              cls_logit=score_no,
+                              score=score_no,
                               cls_idx=1))
-        prelim_predictions.append(
-            _PrelimPrediction(feature_index=max_span_feature_index,
-                              start_index=0,
-                              end_index=0,
-                              start_logit=-float('INF'),
-                              end_logit=-float('INF'),
-                              cls_logit=score_span,
-                              cls_idx=3))
-        feature = features[max_span_feature_index]
-        for start_index in max_span_start_indexes:
-            for end_index in max_span_end_indexes:
-                # We could hypothetically create invalid predictions, e.g., predict
-                # that the start of the span is in the question. We throw out all
-                # invalid predictions.
-                if start_index >= len(feature.tokens):
-                    continue
-                if end_index >= len(feature.tokens):
-                    continue
-                if start_index not in feature.token_to_orig_map:
-                    continue
-                if end_index not in feature.token_to_orig_map:
-                    continue
-                if not feature.token_is_max_context.get(start_index, False):
-                    continue
-                if end_index < start_index:
-                    continue
-                length = end_index - start_index + 1
-                if length > max_answer_length:
-                    continue
-                part_prelim_predictions.append(
-                    _PrelimPrediction(
-                        feature_index=max_span_feature_index,
-                        start_index=start_index,
-                        end_index=end_index,
-                        start_logit=unique_id_to_result[
-                            feature.unique_id].start_logits[start_index],
-                        end_logit=unique_id_to_result[
-                            feature.unique_id].end_logits[end_index],
-                        cls_logit=score_span,
-                        cls_idx=3))
-
-        part_prelim_predictions = sorted(
-            part_prelim_predictions,
-            key=lambda p: p.start_logit + p.end_logit,
-            reverse=True)
-        # prelim_predictions.extend(part_prelim_predictions)
 
         prelim_predictions = sorted(prelim_predictions,
-                                    key=lambda p: p.cls_logit,
+                                    key=lambda p: p.score,
                                     reverse=True)
 
         _NbestPrediction = collections.namedtuple(  # pylint: disable=invalid-name
-            "NbestPrediction",
-            ["text", "start_logit", "end_logit", "cls_logit", "cls_idx"])
+            "NbestPrediction", ["text", "score", "cls_idx"])
 
         seen_predictions = {}
         nbest = []
         cls_rank = []
-        for pred in part_prelim_predictions:
+        for pred in prelim_predictions:
             if len(nbest) >= n_best_size:  # including yes/no/noanswer pred
                 break
             feature = features[pred.feature_index]
@@ -837,50 +810,15 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
                 seen_predictions[final_text] = True
                 nbest.append(
                     _NbestPrediction(text=final_text,
-                                     start_logit=pred.start_logit,
-                                     end_logit=pred.end_logit,
-                                     cls_logit=pred.cls_logit,
+                                     score=pred.score,
                                      cls_idx=pred.cls_idx))
-        if not nbest or len(nbest) < 1:
-            nbest.append(
-                _NbestPrediction(text="unknown",
-                                 start_logit=-float('INF'),
-                                 end_logit=-float('INF'),
-                                 cls_logit=score_span,
-                                 cls_idx=3))
-        for pred in prelim_predictions:
-            if pred.cls_idx == 3:
-                final_text = nbest[0].text
-                cls_rank.append(
-                    _NbestPrediction(text=final_text,
-                                     start_logit=nbest[0].start_logit,
-                                     end_logit=nbest[0].end_logit,
-                                     cls_logit=pred.cls_logit,
+            else:
+                text = ['yes', 'no', 'unknown']
+                nbest.append(
+                    _NbestPrediction(text=text[pred.cls_idx],
+                                     score=pred.score,
                                      cls_idx=pred.cls_idx))
-            elif pred.cls_idx == 0:
-                final_text = "yes"
-                cls_rank.append(
-                    _NbestPrediction(text=final_text,
-                                     start_logit=-float('INF'),
-                                     end_logit=-float('INF'),
-                                     cls_logit=pred.cls_logit,
-                                     cls_idx=pred.cls_idx))
-            elif pred.cls_idx == 1:
-                final_text = "no"
-                cls_rank.append(
-                    _NbestPrediction(text=final_text,
-                                     start_logit=-float('INF'),
-                                     end_logit=-float('INF'),
-                                     cls_logit=pred.cls_logit,
-                                     cls_idx=pred.cls_idx))
-            elif pred.cls_idx == 2:
-                final_text = "unknown"
-                cls_rank.append(
-                    _NbestPrediction(text=final_text,
-                                     start_logit=-float('INF'),
-                                     end_logit=-float('INF'),
-                                     cls_logit=pred.cls_logit,
-                                     cls_idx=pred.cls_idx))
+
         # if we didn't include the empty option in the n-best, include it
         # if "" not in seen_predictions:
         #     nbest.append(
@@ -899,39 +837,50 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
         # In very rare edge cases we could have no valid predictions. So we
         # just create a nonce prediction in this case to avoid failure.
 
+        if len(nbest) < 1:
+            nbest.append(
+                _NbestPrediction(text='unknown',
+                                 score=-float('inf'),
+                                 cls_idx=2))
+
         assert len(nbest) >= 1
 
-        total_scores = []
-        cls_scores = []
-        for entry in nbest:
-            total_scores.append(entry.start_logit + entry.end_logit)
-        for entry in cls_rank:
-            cls_scores.append(entry.cls_logit)
+        probs = _compute_softmax([p.score for p in nbest])
 
-        span_probs = _compute_softmax(total_scores)
-        cls_probs = _compute_softmax(cls_scores)
+        # total_scores = []
+        # cls_scores = []
+        # for entry in nbest:
+        #     total_scores.append(entry.start_logit + entry.end_logit)
+        # for entry in cls_rank:
+        #     cls_scores.append(entry.cls_logit)
+
+        # span_probs = _compute_softmax(total_scores)
+        # cls_probs = _compute_softmax(cls_scores)
         nbest_json = []
 
-        # two diff nbest: for cls and for answer span
-        cur_rank, cur_probs, cur_scores = (
-            nbest, span_probs,
-            total_scores) if cls_rank[0].cls_idx == 3 and len(nbest) > 1 else (
-                cls_rank, cls_probs, cls_scores)
+        # # two diff nbest: for cls and for answer span
+        # cur_rank, cur_probs, cur_scores = (
+        #     nbest, span_probs,
+        #     total_scores) if cls_rank[0].cls_idx == 3 and len(nbest) > 1 else (
+        #         cls_rank, cls_probs, cls_scores)
 
-        for i, entry in enumerate(cur_rank):
+        for i, entry in enumerate(nbest):
             output = collections.OrderedDict()
             output["text"] = entry.text
-            output["probability"] = cur_probs[i]
+            output["probability"] = probs[i]
             # output["start_logit"] = entry.start_logit
             # output["end_logit"] = entry.end_logit
-            output["socre"] = cur_scores[i]
+            output["socre"] = entry.score
             nbest_json.append(output)
 
         assert len(nbest_json) >= 1
 
-        
         _id, _turn_id = example.qas_id.split()
-        all_predictions.append({'id': _id, 'turn_id': int(_turn_id), 'answer': confirm_preds(nbest_json)})
+        all_predictions.append({
+            'id': _id,
+            'turn_id': int(_turn_id),
+            'answer': confirm_preds(nbest_json)
+        })
         # if not version_2_with_negative:
         #     all_predictions[example.qas_id] = nbest_json[0]["text"]
         # else:
@@ -955,16 +904,21 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
     #     with open(output_null_log_odds_file, "w") as writer:
     #         writer.write(json.dumps(scores_diff_json, indent=4) + "\n")
 
+
 def confirm_preds(nbest_json):
     # Do something for some obvious wrong-predictions
-    subs = ['one', 'two', 'three','four','five','six','seven','eight','nine','ten','eleven','twelve','true','false'] # very hard-coding, can be extended.
+    subs = [
+        'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
+        'ten', 'eleven', 'twelve', 'true', 'false'
+    ]  # very hard-coding, can be extended.
     ori = nbest_json[0]['text']
-    if len(ori) < 2: # mean span like '.', '!'
+    if len(ori) < 2:  # mean span like '.', '!'
         for e in nbest_json[1:]:
             if _normalize_answer(e['text']) in subs:
                 return e['text']
         return 'unknown'
     return ori
+
 
 def get_final_text(pred_text, orig_text, do_lower_case, verbose_logging=False):
     """Project the tokenized prediction back to the original text."""
@@ -1099,6 +1053,7 @@ def _compute_softmax(scores):
         probs.append(score / total_sum)
     return probs
 
+
 def _normalize_answer(s):
     def remove_articles(text):
         return re.sub(r'\b(a|an|the)\b', ' ', text)
@@ -1114,6 +1069,7 @@ def _normalize_answer(s):
         return text.lower()
 
     return white_space_fix(remove_articles(remove_punc(lower(s))))
+
 
 def score(pred, truth):
     def _f1_score(pred, answers):
@@ -1145,15 +1101,15 @@ def score(pred, truth):
                 score += max(scores_one_out)
             score /= len(ans_tokens)
         return score
-    
+
     #Main Stream
     assert len(pred) == len(truth)
     pred, truth = pred.items(), truth.items()
     no_ans_total = no_total = yes_total = normal_total = total = 0
     no_ans_f1 = no_f1 = yes_f1 = normal_f1 = f1 = 0
     all_f1s = []
-    for (p_id,p), (t_id,t),in zip(pred, truth):
-        assert p_id==t_id
+    for (p_id, p), (t_id, t), in zip(pred, truth):
+        assert p_id == t_id
         total += 1
         this_f1 = _f1_score(p, t)
         f1 += this_f1
