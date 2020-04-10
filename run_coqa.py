@@ -34,7 +34,7 @@ from torch.utils.data import (DataLoader, RandomSampler, SequentialSampler,
 from torch.utils.data.distributed import DistributedSampler
 from tqdm import tqdm, trange
 
-from pytorch_pretrained_bert.file_utils import WEIGHTS_NAME, CONFIG_NAME
+from bert.file_utils import WEIGHTS_NAME, CONFIG_NAME
 from modeling import BertForCoQA
 from bert import AdamW, WarmupLinearSchedule, BertTokenizer
 

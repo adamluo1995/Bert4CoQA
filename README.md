@@ -26,9 +26,9 @@ That can definitely be improved, and if you found better hyper-parameters, you a
 **Not tested on multi-machine training**
 
 ## Requirement
-- pytorch (tested on *1.1.0*)
-- spacy (tested on *2.0.16*)
-- tqdm
+check requirement.txt or
+> pip install -r requirement.txt
+
 ## How to run
 make sure that:
 1. Put *train-coqa-v1.0.json* and *dev-coqa-v1.0.json* on the same dict with *run_coqa.py*

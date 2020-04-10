@@ -29,7 +29,8 @@ import re
 from collections import Counter
 import string
 
-from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_tokenize
+# from pytorch_pretrained_bert.tokenization import BasicTokenizer, whitespace_tokenize
+from bert.tokenization_bert import BasicTokenizer, whitespace_tokenize
 
 logger = logging.getLogger(__name__)
 

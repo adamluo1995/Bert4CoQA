@@ -7,7 +7,7 @@ python run_coqa.py \
 --output_dir tmp \
 --train_file coqa-train-v1.0.json \
 --predict_file coqa-dev-v1.0.json \
---train_batch_size 12 \
+--train_batch_size 10 \
 --learning_rate 3e-5 \
 --warmup_proportion 0.1 \
 --max_grad_norm -1 \
