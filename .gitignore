@@ -4,7 +4,7 @@ coqa-dev-v1.0.json_*
 coqa-train-v1.0.json
 coqa-train-v1.0.json_*
 *.json
-*.txt
+vocab.txt
 *.log
 .vscode/*
 *.pyc
