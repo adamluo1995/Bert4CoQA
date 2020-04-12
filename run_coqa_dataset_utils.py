@@ -93,8 +93,8 @@ class InputFeatures(object):
                  segment_ids,
                  start_position=None,
                  end_position=None,
-                 cls_idx=None,
-                 rational_mask=None):
+                 rational_mask=None,
+                 cls_idx=None):
         self.unique_id = unique_id
         self.example_index = example_index
         self.doc_span_index = doc_span_index
@@ -330,32 +330,36 @@ def read_coqa_examples(input_file, history_len=2, add_QA_tag=False):
                 _qas['answer_span'] = find_span_with_gt(
                     _datum['context'], _datum['raw_context_offsets'],
                     input_text)
-            long_question = ''
+            long_questions = []
             for j in range(i - history_len, i + 1):
+                long_question = ''
                 if j < 0:
                     continue
                 long_question += (' <Q> ' if add_QA_tag else
                                   ' ') + datum['questions'][j]['input_text']
                 if j < i:
                     long_question += (' <A> ' if add_QA_tag else
-                                      ' ') + datum['answers'][j]['input_text']
+                                      ' ') + datum['answers'][j]['input_text'] + ' [SEP]'
+                long_question = long_question.strip()
+                long_questions.append(long_question)
 
-            long_question = long_question.strip()
-            _qas['raw_long_question'] = long_question
-            _qas['annotated_long_question'] = process(
-                nlp(pre_proc(long_question)))
+            # long_question = long_question.strip()
+            # _qas['raw_long_question'] = long_question
+            # _qas['annotated_long_question'] = process(
+            #     nlp(pre_proc(long_question)))
             # _datum['qas'].append(_qas)
             example = CoqaExample(
                 qas_id=_datum['id'] + ' ' + str(_qas['turn_id']),
-                question_text=_qas['raw_long_question'],
+                question_text=long_questions,
                 doc_tokens=_datum['annotated_context']['word'],
                 orig_answer_text=_qas['raw_answer'],
                 start_position=_qas['answer_span'][0],
                 end_position=_qas['answer_span'][1],
                 rational_start_position=r_start,
                 rational_end_position=r_end,
-                additional_answers=_qas['additional_answers'] if 'additional_answers' in _qas else None,
-                )
+                additional_answers=_qas['additional_answers']
+                if 'additional_answers' in _qas else None,
+            )
             examples.append(example)
 
     return examples
@@ -368,8 +372,11 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
     unique_id = 1000000000
 
     features = []
-    for (example_index, example) in enumerate(tqdm(examples, desc="Generating features")):
-        query_tokens = tokenizer.tokenize(example.question_text)
+    for (example_index,
+         example) in enumerate(tqdm(examples, desc="Generating features")):
+        query_tokens = []
+        for qa in example.question_text:
+            query_tokens.extend(tokenizer.tokenize(qa))
 
         cls_idx = 3
         if example.orig_answer_text == 'yes':
@@ -379,8 +386,10 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
         elif example.orig_answer_text == 'unknown':
             cls_idx = 2  # unknown
 
-        if len(query_tokens) > max_query_length:
+        if len(query_tokens) > max_query_length:  # keep tail, not head
+            query_tokens.reverse()
             query_tokens = query_tokens[0:max_query_length]
+            query_tokens.reverse()
 
         tok_to_orig_index = []
         orig_to_tok_index = []
@@ -395,7 +404,6 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
         tok_start_position = None
         tok_end_position = None
         tok_r_start_position, tok_r_end_position = None, None
-        tok_pre_sp, tok_pre_ep = [], []
 
         # rational part
         tok_r_start_position = orig_to_tok_index[
@@ -407,8 +415,11 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             tok_r_end_position = len(all_doc_tokens) - 1
         # rational part end
 
+        # if tok_r_end_position is None:
+        #     print('DEBUG')
+
         if cls_idx < 3:
-            tok_start_position, tok_end_position = 0,0
+            tok_start_position, tok_end_position = 0, 0
         else:
             tok_start_position = orig_to_tok_index[example.start_position]
             if example.end_position < len(example.doc_tokens) - 1:
@@ -417,8 +428,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             else:
                 tok_end_position = len(all_doc_tokens) - 1
             (tok_start_position, tok_end_position) = _improve_answer_span(
-                all_doc_tokens, tok_start_position, tok_end_position, tokenizer,
-                example.orig_answer_text)
+                all_doc_tokens, tok_start_position, tok_end_position,
+                tokenizer, example.orig_answer_text)
         # The -3 accounts for [CLS], [SEP] and [SEP]
         max_tokens_for_doc = max_seq_length - len(query_tokens) - 3
 
@@ -444,13 +455,23 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             token_to_orig_map = {}
             token_is_max_context = {}
             segment_ids = []
+
+            # cur_id = 2 - query_tokens.count('[SEP]')
+
+            # assert cur_id >= 0
+
             tokens.append("[CLS]")
             segment_ids.append(0)
             for token in query_tokens:
                 tokens.append(token)
                 segment_ids.append(0)
+                # if token == '[SEP]':
+                #     cur_id += 1
             tokens.append("[SEP]")
             segment_ids.append(0)
+            # cur_id += 1
+
+            # assert cur_id <= 3
 
             for i in range(doc_span.length):
                 split_token_index = doc_span.start + i
@@ -485,7 +506,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             start_position = None
             end_position = None
             rational_start_position = None
-            ration_end_position = None
+            rational_end_position = None
 
             # rational_part
             doc_start = doc_span.start
@@ -530,6 +551,7 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
             else:
                 start_position = 0
                 end_position = 0
+
             if example_index < 5:
                 logger.info("*** Example ***")
                 logger.info("unique_id: %s" % (unique_id))
@@ -549,14 +571,25 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                             " ".join([str(x) for x in input_mask]))
                 logger.info("segment_ids: %s" %
                             " ".join([str(x) for x in segment_ids]))
-                if cls_idx < 3:
-                    logger.info("y/n/unk example")
-                else:
+
+                if slice_cls_idx >= 3:
                     answer_text = " ".join(
                         tokens[start_position:(end_position + 1)])
-                    logger.info("start_position: %d" % (start_position))
-                    logger.info("end_position: %d" % (end_position))
-                    logger.info("answer: %s" % (answer_text))
+                else:
+                    tmp = ['yes', 'no', 'unknown']
+                    answer_text = tmp[slice_cls_idx]
+
+                rational_text = " ".join(
+                    tokens[rational_start_position:(rational_end_position +
+                                                    1)])
+                logger.info("start_position: %d" % (start_position))
+                logger.info("end_position: %d" % (end_position))
+                logger.info("rational_start_position: %d" %
+                            (rational_start_position))
+                logger.info("rational_end_position: %d" %
+                            (rational_end_position))
+                logger.info("answer: %s" % (answer_text))
+                logger.info("rational: %s" % (rational_text))
 
             features.append(
                 InputFeatures(unique_id=unique_id,
@@ -570,8 +603,8 @@ def convert_examples_to_features(examples, tokenizer, max_seq_length,
                               segment_ids=segment_ids,
                               start_position=start_position,
                               end_position=end_position,
-                              cls_idx=slice_cls_idx,
-                              rational_mask=rational_mask))
+                              rational_mask=rational_mask,
+                              cls_idx=slice_cls_idx))
             unique_id += 1
 
     return features
@@ -652,8 +685,10 @@ def _check_is_max_context(doc_spans, cur_span_index, position):
     return cur_span_index == best_span_index
 
 
-RawResult = collections.namedtuple(
-    "RawResult", ["unique_id", "start_logits", "end_logits", "yes_logits", "no_logits", "unk_logits"])
+RawResult = collections.namedtuple("RawResult", [
+    "unique_id", "start_logits", "end_logits", "yes_logits", "no_logits",
+    "unk_logits"
+])
 
 
 def write_predictions(all_examples, all_features, all_results, n_best_size,
@@ -696,7 +731,8 @@ def write_predictions(all_examples, all_features, all_results, n_best_size,
 
         score_yes, score_no, score_span, score_unk = -float('INF'), -float(
             'INF'), -float('INF'), float('INF')
-        min_unk_feature_index, max_yes_feature_index, max_no_feature_index, max_span_feature_index = -1, -1, -1, -1  # the paragraph slice with min null score
+        min_unk_feature_index, max_yes_feature_index, max_no_feature_index, max_span_feature_index = - \
+            1, -1, -1, -1  # the paragraph slice with min null score
         max_span_start_indexes, max_span_end_indexes = [], []
         max_start_index, max_end_index = -1, -1
         # null_start_logit = 0  # the start logit at the slice with min null score
@@ -1103,7 +1139,7 @@ def score(pred, truth):
             score /= len(ans_tokens)
         return score
 
-    #Main Stream
+    # Main Stream
     assert len(pred) == len(truth)
     pred, truth = pred.items(), truth.items()
     no_ans_total = no_total = yes_total = normal_total = total = 0
