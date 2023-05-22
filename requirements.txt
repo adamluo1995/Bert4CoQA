@@ -1,5 +1,5 @@
 tqdm==4.32.1
-requests==2.21.0
+requests==2.31.0
 botocore==1.12.183
 apex==0.1
 spacy==2.0.16
